@@ -9,6 +9,7 @@ import threading
 import uuid
 import zipfile
 from pathlib import Path
+from urllib.parse import unquote
 
 import markdown as md
 import requests
@@ -120,10 +121,46 @@ def _get_preview(pr: int) -> dict:
     return {
         "pr": pr,
         "title": str(manifest.get("title", "")),
+        "head_sha": str(manifest.get("head_sha", "")),
         "pages": [str(p) for p in manifest.get("pages", [])],
+        "notebooks": [str(p) for p in manifest.get("notebooks", [])],
         "base_path": f"/pr-preview/pr-{pr}",
         "pr_url": f"https://github.com/{owner}/{repo}/pull/{pr}",
     }
+
+
+# A link that opens one of the content repo's notebooks in Colab:
+# .../github/<owner>/<repo>/blob/<branch>/<path>.ipynb, with an optional ?t=
+# cache-buster. Group 1 is the notebook's path in the repo.
+_COLAB_LINK_RE = re.compile(
+    r"https://colab\.research\.google\.com/github/[^/\s]+/[^/\s]+/blob/[^/\s]+/"
+    r"([^\s()?#\"'<>]+\.ipynb)(?:\?t=\w+)?"
+)
+
+
+def _preview_colab_links(text: str, preview: dict) -> str:
+    """
+    Point a page's Colab links at the PR's copy of each notebook the PR
+    regenerated (the manifest's `notebooks`), which lives next to the pages on
+    the `pr-preview` branch. Links to any other notebook are left alone.
+    """
+    if not preview["notebooks"]:
+        return text
+    owner = os.environ.get("GH_OWNER", "ARENA-education")
+    repo = os.environ.get("GH_REPO", "ARENA_materials")
+    branch = os.environ.get("PR_PREVIEW_BRANCH", "pr-preview")
+    # Colab caches notebooks by URL; the PR's head commit makes each push a new one.
+    suffix = f"?t={preview['head_sha'][:7]}" if re.fullmatch(r"[0-9a-f]{7,40}", preview["head_sha"]) else ""
+
+    def repoint(match: re.Match) -> str:
+        if unquote(match.group(1)) not in preview["notebooks"]:
+            return match.group(0)
+        return (
+            f"https://colab.research.google.com/github/{owner}/{repo}/blob/{branch}"
+            f"/pr-{preview['pr']}/{match.group(1)}{suffix}"
+        )
+
+    return _COLAB_LINK_RE.sub(repoint, text)
 
 
 def _fetch_content(md_path: str, preview: dict | None = None) -> str:
@@ -131,10 +168,15 @@ def _fetch_content(md_path: str, preview: dict | None = None) -> str:
     Fetch content for a file path: local ARENA_materials first, then GitHub.
 
     In a PR preview, pages the PR regenerated come from the preview; every
-    other page is the same as on main.
+    other page is the same as on main. Either way, Colab links to notebooks
+    the PR regenerated open the PR's copy.
     """
-    if preview is not None and md_path in preview["pages"]:
-        return _fetch_text(_preview_raw_url(preview["pr"], md_path))
+    if preview is not None:
+        if md_path in preview["pages"]:
+            text = _fetch_text(_preview_raw_url(preview["pr"], md_path))
+        else:
+            text = _fetch_content(md_path)
+        return _preview_colab_links(text, preview)
     local = _try_read_local_arena(md_path)
     if local is not None:
         return local

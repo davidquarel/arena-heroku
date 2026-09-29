@@ -33,8 +33,10 @@ it now uploads the regenerated pages, and a second workflow copies them to a
 
 ```
 pr-preview branch
-  pr-407/preview.json                                  {pr, title, head_sha, pages: [...]}
+  pr-407/preview.json                                  {pr, title, head_sha, pages: [...], notebooks: [...]}
   pr-407/chapter0_fundamentals/instructions/pages/03_[0.3]_Optimization.md
+  pr-407/chapter0_fundamentals/exercises/part3_optimization/0.3_Optimization_exercises.ipynb
+  pr-407/chapter0_fundamentals/exercises/part3_optimization/tests.py
   pr-412/...
 ```
 
@@ -44,6 +46,7 @@ pr-preview branch
 |---|---|
 | `/pr-preview/pr-<N>/…` routes — the chapter pages and the section API again, with a `pr` argument | `pages/urls.py` |
 | `_get_preview()` reads `pr-<N>/preview.json` (404 → no such preview); `_fetch_content()` serves a page from the preview if the manifest lists it, otherwise from main as usual | `pages/views.py` |
+| `_preview_colab_links()` points the Colab links of the notebooks the manifest lists at the PR's copies | `pages/views.py` |
 | `preview_index` — landing page listing the pages the PR changes | `pages/views.py`, `templates/preview_index.html` |
 | Banner, `noindex`, `window.ARENA_BASE_PATH`; `{{ base_path }}` on in-site links so navigation stays inside the preview | `templates/base.html`, `templates/chapter.html` |
 | `BASE_PATH` on the URLs chapter-nav builds, and an `arena:content-rendered` event after each client-side render | `static/js/chapter-nav.js` |
@@ -72,6 +75,33 @@ The site navigates client-side, so the view listens for
 `arena:content-rendered` and rebuilds itself for each subsection. The status
 readout (`−1 +4 ~1 blocks`) is per subsection; a subsection that does not
 exist on main reports "subsection is new on this PR".
+
+### Colab links
+
+A page's Colab links open the notebooks on main, which do not have the PR's
+changes: like the pages, notebooks are regenerated only after merge. So the
+content repo publishes the PR's notebooks next to its pages and lists them in
+the manifest's `notebooks`. Inside a preview, a link to a listed notebook
+
+```
+https://colab.research.google.com/github/<owner>/<repo>/blob/main/<path>.ipynb?t=20260928
+```
+
+is rewritten in the markdown, before rendering, to
+
+```
+https://colab.research.google.com/github/<owner>/<repo>/blob/pr-preview/pr-<N>/<path>.ipynb?t=<head sha>
+```
+
+Links to notebooks the PR did not regenerate are left alone, as is every link
+when the manifest has no `notebooks` (a preview published before this
+existed). The `?t=` is there because Colab keeps a copy of a notebook it has
+opened; the PR's head commit makes each push a new URL.
+
+The published notebooks are not main's with a different URL: each has a
+banner cell, and a cell after the setup cell that fetches the PR's exercise
+files. That is the content repo's doing, see its `.github/PR-PREVIEWS.md`.
+The diff view compares text, so the rewritten links do not show up in it.
 
 ## Configuration
 
@@ -115,12 +145,18 @@ markdown from anyone who opens a PR.
 PR titles reach the page through Django's autoescaping; keep them out of
 `|safe`.
 
+A previewed notebook is the PR author's code, run by whoever opens it, in
+their own Colab session. It is published under the same gate as the pages,
+and the Colab links are only ever rewritten to the `pr-preview` branch of the
+content repo, never to a fork.
+
 ## Known limitations
 
 - **The chapter list comes from main.** `config.yaml` is not previewed, so a PR
   that adds, renames or reorders sections shows main's navigation.
-- **Only the pages.** The right sidebar's download / copy-context / chat
-  features read `/api/raw/…`, i.e. main's files, even inside a preview.
+- **Only the pages and the Colab links.** The right sidebar's download /
+  copy-context / chat features read `/api/raw/…`, i.e. main's files, even
+  inside a preview.
 - **Freshness.** raw.githubusercontent.com caches for about five minutes, and
   this app's responses carry `max-age=300`; a push can take that long to show.
 - **Blocks are matched by content**, so inserting an exercise mid-section shows

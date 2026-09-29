@@ -20,7 +20,17 @@ CHAPTER = {
     ],
 }
 
-MANIFEST = {"pr": 7, "title": "Fix <b>rays</b>", "head_sha": "abc", "pages": ["ch0/instructions/pages/01.md"]}
+COLAB = "https://colab.research.google.com/github/ARENA-education/ARENA_materials/blob"
+RAYS_NOTEBOOK = "ch0/exercises/part1_ray_tracing/0.1_Ray_Tracing_exercises.ipynb"
+CNNS_NOTEBOOK = "ch0/exercises/part2_cnns/0.2_CNNs_exercises.ipynb"
+
+MANIFEST = {
+    "pr": 7,
+    "title": "Fix <b>rays</b>",
+    "head_sha": "abc1234def",
+    "pages": ["ch0/instructions/pages/01.md"],
+    "notebooks": [RAYS_NOTEBOOK],
+}
 
 
 def fake_fetch_text(url: str) -> str:
@@ -28,11 +38,14 @@ def fake_fetch_text(url: str) -> str:
     if url.endswith("/pr-7/preview.json"):
         return json.dumps(MANIFEST)
     if url.endswith("/pr-7/ch0/instructions/pages/01.md"):
-        return "# Rays\n\nText from the pull request."
+        return (
+            "# Rays\n\nText from the pull request.\n\n"
+            f"[exercises]({COLAB}/main/{RAYS_NOTEBOOK}?t=20260928) | [cnns]({COLAB}/main/{CNNS_NOTEBOOK}?t=20260928)"
+        )
     if "/pr-" in url:
         raise Http404(url)
     if url.endswith("/refs/heads/main/ch0/instructions/pages/01.md"):
-        return "# Rays\n\nText from main."
+        return f"# Rays\n\nText from main.\n\n[exercises]({COLAB}/main/{RAYS_NOTEBOOK}?t=20260901)"
     if url.endswith("/refs/heads/main/ch0/instructions/pages/02.md"):
         return "# CNNs\n\nUntouched page."
     raise Http404(url)
@@ -81,6 +94,20 @@ class PrPreviewTests(SimpleTestCase):
         self.assertIn('href="/pr-preview/pr-7/ch0/01_ray_tracing/"', html)
         self.assertNotIn("/pr-preview/pr-7/ch0/02_cnns/", html)
 
+    def test_colab_links_open_the_prs_notebooks(self, *_):
+        for url in ("/pr-preview/pr-7/ch0/01_ray_tracing/", "/pr-preview/pr-7/api/ch0/01_ray_tracing/"):
+            html = self.client.get(url).content.decode()
+            self.assertIn(f"{COLAB}/pr-preview/pr-7/{RAYS_NOTEBOOK}?t=abc1234", html)
+            self.assertNotIn(f"{COLAB}/main/{RAYS_NOTEBOOK}", html)
+            # A notebook the PR did not regenerate is still main's.
+            self.assertIn(f"{COLAB}/main/{CNNS_NOTEBOOK}?t=20260928", html)
+
+    def test_preview_without_notebooks_keeps_mains_colab_links(self, *_):
+        manifest = {k: v for k, v in MANIFEST.items() if k != "notebooks"}
+        with mock.patch.dict(MANIFEST, manifest, clear=True):
+            html = self.client.get("/pr-preview/pr-7/ch0/01_ray_tracing/").content.decode()
+        self.assertIn(f"{COLAB}/main/{RAYS_NOTEBOOK}?t=20260928", html)
+
     def test_unknown_pr_is_a_404(self, *_):
         self.assertEqual(self.client.get("/pr-preview/pr-8/").status_code, 404)
         self.assertEqual(self.client.get("/pr-preview/pr-8/ch0/01_ray_tracing/").status_code, 404)
@@ -90,5 +117,6 @@ class PrPreviewTests(SimpleTestCase):
         html = self.client.get("/ch0/01_ray_tracing/").content.decode()
         self.assertIn("Text from main.", html)
         self.assertIn('href="/ch0/02_cnns/"', html)
+        self.assertIn(f"{COLAB}/main/{RAYS_NOTEBOOK}?t=20260901", html)
         for marker in ("preview-banner", "js/diff.js", "ARENA_BASE_PATH =", "noindex"):
             self.assertNotIn(marker, html)
