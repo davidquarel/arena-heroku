@@ -43,7 +43,7 @@ SUBSECTION_DELIMITER = "=== NEW CHAPTER ==="
 
 # Bump this string whenever _render_markdown logic changes so that cached
 # entries from a previous code version are automatically invalidated.
-_RENDER_VERSION = "2026-03-02-v3-details-prerender"
+_RENDER_VERSION = "2026-10-06-v4-stable-latex-placeholders"
 
 # Render cache: sha256(version + raw_text) -> parsed subsections list
 _render_cache: dict[str, list[dict]] = {}
@@ -268,12 +268,18 @@ def _protect_latex(text: str) -> tuple[str, dict]:
     """
     Protect LaTeX blocks from markdown processing by replacing with placeholders.
     Returns the modified text and a dict mapping placeholders to original LaTeX.
+
+    A placeholder is a hash of its LaTeX, not a random token: one inside a
+    heading ends up in that heading's anchor id (the toc extension slugifies
+    the text before the LaTeX is restored), so a random one would change the
+    id on every render, breaking deep links and making identical pages render
+    differently (PR previews compare main's render with the PR's).
     """
     placeholders = {}
 
     # Protect display math blocks ($$...$$) - these may span multiple lines
     def replace_display(match):
-        placeholder = f"LATEXDISPLAY{uuid.uuid4().hex}ENDLATEX"
+        placeholder = f"LATEXDISPLAY{hashlib.sha256(match.group(0).encode()).hexdigest()[:32]}ENDLATEX"
         # Wrap in a div with class for proper styling
         content = match.group(1)
         placeholders[placeholder] = f'<div class="katex-display-wrapper">$${content}$$</div>'
@@ -283,7 +289,7 @@ def _protect_latex(text: str) -> tuple[str, dict]:
 
     # Protect inline math ($...$) - but not $$ which we already handled
     def replace_inline(match):
-        placeholder = f"LATEXINLINE{uuid.uuid4().hex}ENDLATEX"
+        placeholder = f"LATEXINLINE{hashlib.sha256(match.group(0).encode()).hexdigest()[:32]}ENDLATEX"
         content = match.group(1)
         placeholders[placeholder] = f"${content}$"
         return placeholder
