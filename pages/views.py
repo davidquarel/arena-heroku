@@ -183,6 +183,25 @@ def _fetch_content(md_path: str, preview: dict | None = None) -> str:
     return _fetch_text(_raw_url(md_path))
 
 
+def _mark_changed_subsections(subsections: list[dict], section: dict, preview: dict | None) -> list[dict]:
+    """
+    In a PR preview, flag each subsection whose rendered HTML differs from
+    main's (`changed`), so the sidebar can tint it. Main's text gets the same
+    Colab-link rewrite first, so only the PR's own edits count. A section the
+    PR did not regenerate is unchanged throughout; a subsection main lacks is
+    changed. Returns copies: `subsections` may be the render cache's own list.
+    """
+    if preview is None or section.get("path") not in preview["pages"]:
+        return subsections
+    try:
+        main = _parse_subsections(_preview_colab_links(_fetch_content(section["path"]), preview))
+    except (Http404, requests.RequestException) as e:
+        logger.warning("Preview: could not load main's '%s' to compare: %s", section["path"], e)
+        main = []
+    main_html = {s["id"]: s["html"] for s in main}
+    return [{**s, "changed": main_html.get(s["id"]) != s["html"]} for s in subsections]
+
+
 def _read_local_content(filename: str) -> str:
     """Read markdown content from local content directory."""
     filepath = CONTENT_DIR / filename
@@ -623,6 +642,7 @@ def chapter_view(
             text = _fetch_content(section["path"], preview)
         logger.info("Content loaded for '%s' (%d chars)", section_id, len(text))
         subsections = _parse_subsections(text)
+        subsections = _mark_changed_subsections(subsections, section, preview)
     except Http404 as e:
         url = section.get("local_path") or section.get("path", "")
         logger.warning("Content not found for section '%s' (%s): %s", section_id, url, e)
@@ -720,6 +740,7 @@ def section_api(request, chapter_id: str, section_id: str, pr: int | None = None
             text = _fetch_content(path, preview)
         logger.info("API: Content loaded for '%s' (%d chars)", section_id, len(text))
         subsections = _parse_subsections(text)
+        subsections = _mark_changed_subsections(subsections, section, preview)
     except Http404 as e:
         url = section.get("local_path") or section.get("path", "")
         logger.warning("API: Content not found for section '%s' (%s): %s", section_id, url, e)
