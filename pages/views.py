@@ -22,6 +22,7 @@ from django.views.decorators.http import require_GET, require_POST
 from openai import OpenAI
 
 from .chapters import get_all_chapters, get_chapter, get_section
+from .commonmark_render import render_commonmark
 from .github_cache import fetch_github_text
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,12 @@ SUBSECTION_DELIMITER = "=== NEW CHAPTER ==="
 
 # Bump this string whenever _render_markdown logic changes so that cached
 # entries from a previous code version are automatically invalidated.
-_RENDER_VERSION = "2026-03-02-v3-details-prerender"
+_RENDER_VERSION = "2026-11-08-v5-commonmark"
+
+# Which markdown parser renders course pages: "commonmark" (markdown-it-py; matches how the
+# material is written and previewed in Jupyter/GitHub) or "python-markdown" (the old renderer).
+MARKDOWN_ENGINE = os.environ.get("ARENA_MARKDOWN_ENGINE", "commonmark")
+_ESCAPED_DOLLAR = "ESCAPEDDOLLARa61f0c2bEND"
 
 # Render cache: sha256(version + raw_text) -> parsed subsections list. Bounded:
 # every edit to a page (and every PR preview) adds a new key, and nothing else
@@ -358,6 +364,14 @@ def _render_markdown(text: str) -> str:
     # Pre-process to handle exercise info blocks
     text = _preprocess_exercise_blocks(text)
 
+    if MARKDOWN_ENGINE == "commonmark":
+        # An escaped dollar (\$5) is a literal dollar sign, not the start of maths. Keep it away from the
+        # LaTeX regex, and give it its own <span> so KaTeX's auto-render can't pair it with another $.
+        text = text.replace("\\$", _ESCAPED_DOLLAR)
+        text, latex_placeholders = _protect_latex(text)
+        rendered = _restore_latex(render_commonmark(text, latex_placeholders), latex_placeholders)
+        return rendered.replace(_ESCAPED_DOLLAR, "<span>$</span>")
+
     # Enable markdown processing inside HTML blockquotes
     text = text.replace("<blockquote>", '<blockquote markdown="1">')
 
@@ -447,7 +461,7 @@ def _parse_subsections(markdown_text: str) -> list[dict]:
     Results are cached by sha256(markdown_text) since the render pipeline is
     deterministic — identical input always produces identical output.
     """
-    cache_key = hashlib.sha256((_RENDER_VERSION + markdown_text).encode()).hexdigest()
+    cache_key = hashlib.sha256((_RENDER_VERSION + MARKDOWN_ENGINE + markdown_text).encode()).hexdigest()
 
     with _render_lock:
         cached = _render_cache.get(cache_key)

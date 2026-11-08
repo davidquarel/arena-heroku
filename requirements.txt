@@ -7,3 +7,4 @@ Pygments
 tiktoken
 openai
 pyyaml
+markdown-it-py[plugins]>=4.0

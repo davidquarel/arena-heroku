@@ -161,6 +161,61 @@ class GithubCacheTests(SimpleTestCase):
                 self.gc.fetch_github_text(self.URL)
 
 
+
+
+class CommonMarkRenderingTests(SimpleTestCase):
+    """Course pages render the CommonMark the material is written in (see pages/commonmark_render.py)."""
+
+    def render(self, text):
+        return views._render_markdown(text)
+
+    def test_list_directly_after_paragraph(self):
+        out = self.render("Some notes:\n* first\n* second\n")
+        self.assertIn("<p>Some notes:</p>", out)
+        self.assertIn("<li>first</li>", out)
+
+    def test_two_space_nested_list(self):
+        self.assertIn("<li>a\n<ul>\n<li>nested</li>", self.render("* a\n  * nested\n* b\n"))
+
+    def test_markdown_after_summary_on_same_line(self):
+        out = self.render("<details><summary>Hint</summary> Use **this**.\n</details>\n")
+        self.assertIn("<strong>this</strong>", out)
+
+    def test_nested_dropdowns(self):
+        out = self.render(
+            "<details>\n<summary>Outer</summary>\n\n**a**\n\n<details>\n<summary>Inner</summary>\n\n**b**\n\n</details>\n\n**c**\n\n</details>\n"
+        )
+        for word in ("a", "b", "c"):
+            self.assertIn(f"<strong>{word}</strong>", out)
+        self.assertLess(out.index("<strong>b</strong>"), out.index("</details>"))
+
+    def test_commented_out_dropdown_stays_hidden(self):
+        out = self.render("Text.\n\n<!-- <details>\n<summary>Hidden</summary>\n\nSecret.\n\n</details> -->\n\nMore.\n")
+        self.assertNotIn("<p>Secret.</p>", out)
+        self.assertIn("<p>More.</p>", out)
+
+    def test_text_directly_after_exercise_box(self):
+        text = "> ```yaml\n> Difficulty: 🔴⚪⚪⚪⚪\n> Importance: 🔵⚪⚪⚪⚪\n> ```\n**Bold** text.\n"
+        self.assertIn("<strong>Bold</strong> text.", self.render(text))
+
+    def test_escaped_dollars_are_not_maths(self):
+        out = self.render("Costs \\$5, or \\$200 in total; $x_1$ is maths.\n")
+        self.assertIn("Costs <span>$</span>5, or <span>$</span>200", out)
+        self.assertIn("$x_1$", out)
+
+    def test_latex_is_protected_from_emphasis(self):
+        self.assertIn("$a_1 * b_2 * c$", self.render("Here $a_1 * b_2 * c$ holds.\n"))
+
+    def test_headings_get_toc_ids_except_inside_dropdowns(self):
+        out = self.render("## My Heading\n\n<details>\n<summary>S</summary>\n\n## Inside\n\n</details>\n")
+        self.assertIn('<h2 id="my-heading">', out)
+        self.assertIn("<h2>Inside</h2>", out)
+
+    def test_code_block_highlighting_matches_codehilite(self):
+        out = self.render("```python\nx = 1\n```\n")
+        self.assertIn('<div class="codehilite"><pre><span></span><code><span class="n">x</span>', out)
+
+
 class RenderCacheTests(SimpleTestCase):
     def test_render_cache_is_bounded(self):
         views.invalidate_render_cache()
