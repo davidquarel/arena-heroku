@@ -343,7 +343,7 @@ class SystemRequirementsCardTests(SimpleTestCase):
             out = views._inject_requirements(text, "0.1")
         self.assertLess(out.index("sysreq-card"), out.index("# Introduction"))
         self.assertIn("🟧 16 GiB", out)
-        self.assertEqual(out.count("sysreq-card"), 1)
+        self.assertEqual(out.count('class="sysreq-card"'), 1)
 
     def test_no_card_without_data_or_intro(self):
         with mock.patch.object(views, "_system_requirements", return_value={}):
