@@ -329,3 +329,24 @@ class PrPreviewTests(SimpleTestCase):
         self.assertIn(f"{COLAB}/main/{RAYS_NOTEBOOK}?t=20260901", html)
         for marker in ("preview-banner", "js/diff.js", "ARENA_BASE_PATH =", "noindex"):
             self.assertNotIn(marker, html)
+
+
+class SystemRequirementsCardTests(SimpleTestCase):
+    DAY = {
+        "chips": [{"label": "GPU", "text": "🟧 16 GiB"}],
+        "details_md": "<details>\n<summary>System Requirements</summary>\n\n- 🖥️ **GPU:** 🟧 16 GiB\n\n</details>",
+    }
+
+    def test_card_goes_before_introduction(self):
+        text = "# [0.1] Ray Tracing\n\nlinks\n\n# Introduction\n\nbody\n"
+        with mock.patch.object(views, "_system_requirements", return_value={"0.1": self.DAY}):
+            out = views._inject_requirements(text, "0.1")
+        self.assertLess(out.index("sysreq-card"), out.index("# Introduction"))
+        self.assertIn("🟧 16 GiB", out)
+        self.assertEqual(out.count("sysreq-card"), 1)
+
+    def test_no_card_without_data_or_intro(self):
+        with mock.patch.object(views, "_system_requirements", return_value={}):
+            self.assertEqual(views._inject_requirements("# Introduction\n", "0.1"), "# Introduction\n")
+        with mock.patch.object(views, "_system_requirements", return_value={"0.1": self.DAY}):
+            self.assertEqual(views._inject_requirements("no intro here\n", "0.1"), "no intro here\n")

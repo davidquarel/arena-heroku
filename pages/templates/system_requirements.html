@@ -3,79 +3,109 @@
 {% block title %}System Requirements - ARENA{% endblock %}
 
 {% block content %}
-<style>
-  .sysreq-wrap { overflow-x: auto; }
-  .sysreq-table td, .sysreq-table th { vertical-align: top; }
-  .sysreq-table tr.sysreq-row { cursor: pointer; }
-  .sysreq-table tr.sysreq-row:hover td { background: var(--color-surface-hover); }
-  .sysreq-table tr.sysreq-details td { background: var(--color-bg-secondary); }
-  .sysreq-table tr.sysreq-details ul { margin: 0; }
-  .sysreq-num { white-space: nowrap; font-weight: 600; }
-  .sysreq-muted { color: var(--color-text-secondary); }
-  .sysreq-colab { text-align: center; font-size: 1.1em; }
-</style>
 <div class="static-page-container">
-  <div class="static-page-content markdown-content">
+  <div class="static-page-content markdown-content sysreq-page">
     <h1>System Requirements</h1>
     <p>
-      What each day of the course needs: GPU, downloads, runtime, system RAM, API keys, and whether it runs on
-      Colab's free tier (a T4 with 15 GB of GPU memory and 12.7 GB of RAM). Click a row for the full details, which
-      are also shown in a dropdown at the start of each day.
+      What each day needs: GPU, runtime, whether it runs on free Colab, downloads, RAM and API keys. Click a row for
+      the details, which also appear at the start of each day. Runtimes leave out downloads and API calls; GPU times
+      are on a 16 GB RTX A4000.
     </p>
-    <p class="sysreq-muted">
-      Runtime is the time to run the material itself, without downloads or waiting on API calls, measured on a
-      16 GB GPU (CPU times are estimates). Colab: 🟢 runs, 🟡 partly, ❓ not tested yet, 🔴 doesn't run. GPU: ⬜ not needed, 🟩 optional, 🟨 recommended, 🟧 required, 🟥 needs more than 16 GB.
-      <code>LOW_GPU_MEM</code> is a flag that turns on automatically on smaller GPUs and makes the day fit.
+    <p class="sysreq-legend">
+      <span>GPU: ⬜ not needed · 🟩 optional · 🟨 recommended · 🟧 16 GiB card · 🟥 bigger</span>
+      <span>Colab: 🟢 runs · 🟡 partly · ❓ not tested yet · 🔴 doesn't run</span>
+      <span>Download: ⬜ &lt;0.3 GB · 🟩 &lt;2 · 🟨 2–20 · 🟧 20–100 · 🟥 &gt;100 GB</span>
     </p>
-    {% if rows %}
+    {% if groups %}
+    <div class="sysreq-filters">
+      <label>Chapter
+        <select id="sysreq-f-chap">
+          <option value="">All</option>
+          {% for g in groups %}<option value="{{ g.id }}">{{ g.title }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>My GPU
+        <select id="sysreq-f-gpu">
+          <option value="">Any</option>
+          <option value="cpu">No GPU (CPU only)</option>
+          <option value="16">16 GiB (A4000 / T4)</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="sysreq-f-colab"> Runs on free Colab</label>
+      <label><input type="checkbox" id="sysreq-f-nokey"> No paid API keys</label>
+      <span class="sysreq-count" id="sysreq-count">{{ day_count }} of {{ day_count }} days</span>
+    </div>
     <div class="sysreq-wrap">
       <table class="sysreq-table">
         <thead>
           <tr>
-            <th>Day</th>
-            <th>GPU (peak)</th>
-            <th>Download</th>
-            <th>⏱️ GPU</th>
-            <th>⏱️ CPU</th>
-            <th>🐏 RAM</th>
-            <th>API keys / accounts</th>
-            <th>Colab</th>
+            <th>Day</th><th>🖥️ GPU</th><th>⏱️ GPU</th><th>⏱️ CPU</th><th>☁️ Colab</th><th>💾 Download</th><th>🐏 RAM</th><th>🔑 Keys</th>
           </tr>
         </thead>
-        <tbody>
-          {% for row in rows %}
-          <tr class="sysreq-row" data-target="sysreq-{{ forloop.counter }}" aria-expanded="false">
-            <td>
-              <span class="sysreq-num">{{ row.number }}</span>
-              {% if row.link.url %}<a href="{{ row.link.url }}" onclick="event.stopPropagation()">{{ row.link.title }}</a>{% endif %}
-            </td>
+        {% for g in groups %}
+        <tbody data-chapter="{{ g.id }}">
+          <tr class="sysreq-chap"><td colspan="8">{{ g.title }}</td></tr>
+          {% for row in g.rows %}
+          <tr class="sysreq-row" tabindex="0" aria-expanded="false"
+              data-gpu="{{ row.gpu_level }}" data-colab="{{ row.colab }}" data-paid="{{ row.paid_keys|yesno:'1,0' }}">
+            <td class="sysreq-day"><span class="sysreq-num">{{ row.number }}</span><a href="{{ row.url }}">{{ row.title }}</a></td>
             <td>{{ row.cells.gpu }}</td>
-            <td>{{ row.cells.download }}</td>
-            <td>{{ row.cells.runtime_gpu|default:"–" }}</td>
+            <td class="sysreq-nw">{{ row.cells.runtime_gpu|default:"–" }}</td>
             <td>{{ row.cells.runtime_cpu|default:"–" }}</td>
-            <td>{{ row.cells.ram|default:"–" }}</td>
-            <td>{{ row.cells.keys }}</td>
             <td class="sysreq-colab" title="{{ row.cells.colab_note }}">{{ row.cells.colab }}</td>
+            <td class="sysreq-nw">{{ row.cells.download }}</td>
+            <td class="sysreq-nw">{{ row.cells.ram|default:"–" }}</td>
+            <td>{{ row.cells.keys }}</td>
           </tr>
-          <tr class="sysreq-details" id="sysreq-{{ forloop.counter }}" hidden>
-            <td colspan="8">{{ row.details|safe }}</td>
-          </tr>
+          <tr class="sysreq-details" hidden><td colspan="8">{{ row.details|safe }}</td></tr>
           {% endfor %}
         </tbody>
+        {% endfor %}
       </table>
     </div>
+    <p class="sysreq-empty" id="sysreq-empty" hidden>No day matches these filters.</p>
     {% else %}
-    <p>The requirements table isn't available yet. Each day still lists its requirements in a dropdown at the top.</p>
+    <p>The requirements table isn't available right now. Each day lists its requirements at the top of its page.</p>
     {% endif %}
   </div>
 </div>
 <script>
-  document.querySelectorAll(".sysreq-row").forEach(function (row) {
-    row.addEventListener("click", function () {
-      var details = document.getElementById(row.dataset.target);
+  (function () {
+    var rows = Array.prototype.slice.call(document.querySelectorAll(".sysreq-row"));
+    if (!rows.length) return;
+    function toggle(row) {
+      var details = row.nextElementSibling;
       details.hidden = !details.hidden;
       row.setAttribute("aria-expanded", String(!details.hidden));
+    }
+    rows.forEach(function (row) {
+      row.addEventListener("click", function (e) { if (!e.target.closest("a")) toggle(row); });
+      row.addEventListener("keydown", function (e) {
+        if ((e.key === "Enter" || e.key === " ") && e.target === row) { e.preventDefault(); toggle(row); }
+      });
     });
-  });
+    var chap = document.getElementById("sysreq-f-chap"), gpu = document.getElementById("sysreq-f-gpu");
+    var colab = document.getElementById("sysreq-f-colab"), nokey = document.getElementById("sysreq-f-nokey");
+    function apply() {
+      var shown = 0;
+      document.querySelectorAll(".sysreq-table tbody").forEach(function (body) {
+        var any = false;
+        body.querySelectorAll(".sysreq-row").forEach(function (row) {
+          var d = row.dataset;
+          var ok = (!chap.value || body.dataset.chapter === chap.value)
+            && (!gpu.value || (gpu.value === "cpu" ? (d.gpu === "none" || d.gpu === "optional") : d.gpu !== "big"))
+            && (!colab.checked || d.colab === "works" || d.colab === "partial")
+            && (!nokey.checked || d.paid === "0");
+          row.hidden = !ok;
+          if (!ok) { row.nextElementSibling.hidden = true; row.setAttribute("aria-expanded", "false"); }
+          if (ok) { any = true; shown++; }
+        });
+        body.hidden = !any;
+      });
+      document.getElementById("sysreq-count").textContent = shown + " of " + rows.length + " days";
+      document.getElementById("sysreq-empty").hidden = shown > 0;
+    }
+    [chap, gpu, colab, nokey].forEach(function (el) { el.addEventListener("change", apply); });
+  })();
 </script>
 {% endblock %}

@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -572,49 +573,89 @@ def faq(request):
 
 
 SYSTEM_REQUIREMENTS_PATH = "infrastructure/core/system_requirements.json"
+_SYSREQ_TTL = 600  # seconds; the table changes only when ARENA_materials' build regenerates it
+_sysreq_cache: dict = {"at": 0.0, "days": {}}
+PAID_KEYS = {"OpenRouter", "OpenAI", "Anthropic"}
 
 
-def _section_links() -> dict[str, dict]:
-    """Map a section number ("1.3.1") to its page URL and title, from config.yaml."""
-    links = {}
-    for chapter in get_all_chapters():
-        for section in chapter.get("sections", []):
-            if section.get("number") and not section.get("is_group"):
-                links[str(section["number"])] = {
-                    "url": f"/{chapter['id']}/{section['id']}/",
-                    "title": section.get("title", ""),
-                }
-    return links
+def _system_requirements() -> dict[str, dict]:
+    """{"1.3.3": {...}, ...} from ARENA_materials' system_requirements.json, or {} if it can't be read."""
+    if time.monotonic() - _sysreq_cache["at"] < _SYSREQ_TTL:
+        return _sysreq_cache["days"]
+    raw = _try_read_local_arena(SYSTEM_REQUIREMENTS_PATH)
+    if raw is None:
+        try:
+            raw = _fetch_text(_raw_url(SYSTEM_REQUIREMENTS_PATH))
+        except (Http404, requests.RequestException) as e:
+            logger.warning("System requirements unavailable: %s", e)
+            raw = None
+    try:
+        days = json.loads(raw)["days"] if raw is not None else {}
+    except (ValueError, KeyError) as e:
+        logger.warning("System requirements JSON unreadable: %s", e)
+        days = {}
+    _sysreq_cache.update(at=time.monotonic(), days=days)
+    return days
+
+
+def _requirements_list_md(day: dict) -> str:
+    """The dropdown's bullet list, without its <details>/<summary> wrapper."""
+    return re.sub(r"</?details>|<summary>.*?</summary>", "", day["details_md"]).strip()
+
+
+def _inject_requirements(text: str, number: str | None) -> str:
+    """Put the day's "System Requirements" dropdown just before its "# Introduction" heading."""
+    day = _system_requirements().get(str(number)) if number else None
+    if not day:
+        return text
+    chips = "".join(
+        f'<span class="sysreq-chip"><b>{html.escape(c["label"])}</b>{html.escape(c["text"])}</span>'
+        for c in day.get("chips", [])
+    )
+    card = (
+        '<details class="sysreq-card"><summary><span class="sysreq-card-title">System Requirements</span>'
+        f'<span class="sysreq-chips">{chips}</span></summary>\n\n'
+        f"{_requirements_list_md(day)}\n\n"
+        '<p class="sysreq-card-foot">GPU times measured on a 16 GB RTX A4000. '
+        '<a href="/system-requirements/">Compare every day &rarr;</a></p>\n</details>\n\n'
+    )
+    return re.sub(r"^# Introduction[ \t]*$", lambda m: card + m.group(0), text, count=1, flags=re.M)
 
 
 @require_GET
 @cache_control(public=True, max_age=3600)
 def system_requirements(request):
-    """One table with every day's GPU, download, runtime, RAM, API-key and Colab requirements.
+    """One table with every day's GPU, runtime, Colab, download, RAM and API-key requirements, grouped by chapter.
 
-    The data is generated in ARENA_materials from each master file's "requirements" block
-    (infrastructure/core/system_requirements.json, rebuilt by its build workflow)."""
+    The data comes from ARENA_materials' infrastructure/core/system_requirements.yaml, via the
+    system_requirements.json its build workflow regenerates."""
     context = _get_context_base()
-    raw = _try_read_local_arena(SYSTEM_REQUIREMENTS_PATH)
-    if raw is None:
-        try:
-            raw = _fetch_text(_raw_url(SYSTEM_REQUIREMENTS_PATH))
-        except Http404:
-            raw = None
-    rows = []
-    if raw is not None:
-        links = _section_links()
-        for number, day in json.loads(raw)["days"].items():
-            details = re.sub(r"</?details>|<summary>.*?</summary>", "", day["details_md"]).strip()
+    days = _system_requirements()
+    groups = []
+    for chapter in get_all_chapters():
+        rows = []
+        for section in chapter.get("sections", []):
+            number = str(section.get("number") or "")
+            if section.get("is_group") or number not in days:
+                continue
+            day = days[number]
+            req = day["requirements"]
             rows.append(
                 {
                     "number": number,
-                    "link": links.get(number, {}),
+                    "url": f"/{chapter['id']}/{section['id']}/",
+                    "title": section.get("title", ""),
                     "cells": day["cells"],
-                    "details": _render_markdown(details),
+                    "details": _render_markdown(_requirements_list_md(day)),
+                    "gpu_level": req["gpu"],
+                    "colab": req["colab"]["status"],
+                    "paid_keys": any(k["name"] in PAID_KEYS for k in req["keys"]),
                 }
             )
-    context["rows"] = rows
+        if rows:
+            groups.append({"id": chapter["id"], "title": chapter.get("title", chapter["id"]), "rows": rows})
+    context["groups"] = groups
+    context["day_count"] = sum(len(g["rows"]) for g in groups)
     return render(request, "system_requirements.html", context)
 
 
@@ -689,7 +730,7 @@ def chapter_view(
             text = _read_local_content(section["local_path"])
         else:
             logger.info("Fetching content for '%s': %s", section_id, section["path"])
-            text = _fetch_content(section["path"], preview)
+            text = _inject_requirements(_fetch_content(section["path"], preview), section.get("number"))
         logger.info("Content loaded for '%s' (%d chars)", section_id, len(text))
         subsections = _parse_subsections(text)
     except Http404 as e:
@@ -786,7 +827,7 @@ def section_api(request, chapter_id: str, section_id: str, pr: int | None = None
                 logger.warning("API: No 'path' key in section: %s", section)
                 raise Http404(f"No path configured for section {section_id}")
             logger.info("API: Fetching content for '%s': %s", section_id, path)
-            text = _fetch_content(path, preview)
+            text = _inject_requirements(_fetch_content(path, preview), section.get("number"))
         logger.info("API: Content loaded for '%s' (%d chars)", section_id, len(text))
         subsections = _parse_subsections(text)
     except Http404 as e:
