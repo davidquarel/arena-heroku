@@ -571,6 +571,53 @@ def faq(request):
     return render(request, "faq.html", context)
 
 
+SYSTEM_REQUIREMENTS_PATH = "infrastructure/core/system_requirements.json"
+
+
+def _section_links() -> dict[str, dict]:
+    """Map a section number ("1.3.1") to its page URL and title, from config.yaml."""
+    links = {}
+    for chapter in get_all_chapters():
+        for section in chapter.get("sections", []):
+            if section.get("number") and not section.get("is_group"):
+                links[str(section["number"])] = {
+                    "url": f"/{chapter['id']}/{section['id']}/",
+                    "title": section.get("title", ""),
+                }
+    return links
+
+
+@require_GET
+@cache_control(public=True, max_age=3600)
+def system_requirements(request):
+    """One table with every day's GPU, download, runtime, RAM, API-key and Colab requirements.
+
+    The data is generated in ARENA_materials from each master file's "requirements" block
+    (infrastructure/core/system_requirements.json, rebuilt by its build workflow)."""
+    context = _get_context_base()
+    raw = _try_read_local_arena(SYSTEM_REQUIREMENTS_PATH)
+    if raw is None:
+        try:
+            raw = _fetch_text(_raw_url(SYSTEM_REQUIREMENTS_PATH))
+        except Http404:
+            raw = None
+    rows = []
+    if raw is not None:
+        links = _section_links()
+        for number, day in json.loads(raw)["days"].items():
+            details = re.sub(r"</?details>|<summary>.*?</summary>", "", day["details_md"]).strip()
+            rows.append(
+                {
+                    "number": number,
+                    "link": links.get(number, {}),
+                    "cells": day["cells"],
+                    "details": _render_markdown(details),
+                }
+            )
+    context["rows"] = rows
+    return render(request, "system_requirements.html", context)
+
+
 @require_GET
 @cache_control(public=True, max_age=3600)
 def setup(request):

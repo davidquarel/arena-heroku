@@ -1,0 +1,81 @@
+{% extends 'base.html' %}
+
+{% block title %}System Requirements - ARENA{% endblock %}
+
+{% block content %}
+<style>
+  .sysreq-wrap { overflow-x: auto; }
+  .sysreq-table td, .sysreq-table th { vertical-align: top; }
+  .sysreq-table tr.sysreq-row { cursor: pointer; }
+  .sysreq-table tr.sysreq-row:hover td { background: var(--color-surface-hover); }
+  .sysreq-table tr.sysreq-details td { background: var(--color-bg-secondary); }
+  .sysreq-table tr.sysreq-details ul { margin: 0; }
+  .sysreq-num { white-space: nowrap; font-weight: 600; }
+  .sysreq-muted { color: var(--color-text-secondary); }
+  .sysreq-colab { text-align: center; font-size: 1.1em; }
+</style>
+<div class="static-page-container">
+  <div class="static-page-content markdown-content">
+    <h1>System Requirements</h1>
+    <p>
+      What each day of the course needs: GPU, downloads, runtime, system RAM, API keys, and whether it runs on
+      Colab's free tier (a T4 with 15 GB of GPU memory and 12.7 GB of RAM). Click a row for the full details, which
+      are also shown in a dropdown at the start of each day.
+    </p>
+    <p class="sysreq-muted">
+      Runtime is the time to run the material itself, without downloads or waiting on API calls, measured on a
+      16 GB GPU (CPU times are estimates). Colab: ✓ runs, ⚠️ partly, ❓ not tested yet.
+      <code>LOW_GPU_MEM</code> is a flag that turns on automatically on smaller GPUs and makes the day fit.
+    </p>
+    {% if rows %}
+    <div class="sysreq-wrap">
+      <table class="sysreq-table">
+        <thead>
+          <tr>
+            <th>Day</th>
+            <th>GPU (peak)</th>
+            <th>Download</th>
+            <th>⏳ GPU</th>
+            <th>⏳ CPU</th>
+            <th>🐏 RAM</th>
+            <th>API keys / accounts</th>
+            <th>Colab</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="sysreq-row" data-target="sysreq-{{ forloop.counter }}" aria-expanded="false">
+            <td>
+              <span class="sysreq-num">{{ row.number }}</span>
+              {% if row.link.url %}<a href="{{ row.link.url }}" onclick="event.stopPropagation()">{{ row.link.title }}</a>{% endif %}
+            </td>
+            <td>{{ row.cells.gpu }}</td>
+            <td>{{ row.cells.download }}</td>
+            <td>{{ row.cells.runtime_gpu|default:"–" }}</td>
+            <td>{{ row.cells.runtime_cpu|default:"–" }}</td>
+            <td>{{ row.cells.ram|default:"–" }}</td>
+            <td>{{ row.cells.keys }}</td>
+            <td class="sysreq-colab" title="{{ row.cells.colab_note }}">{{ row.cells.colab }}</td>
+          </tr>
+          <tr class="sysreq-details" id="sysreq-{{ forloop.counter }}" hidden>
+            <td colspan="8">{{ row.details|safe }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p>The requirements table isn't available yet. Each day still lists its requirements in a dropdown at the top.</p>
+    {% endif %}
+  </div>
+</div>
+<script>
+  document.querySelectorAll(".sysreq-row").forEach(function (row) {
+    row.addEventListener("click", function () {
+      var details = document.getElementById(row.dataset.target);
+      details.hidden = !details.hidden;
+      row.setAttribute("aria-expanded", String(!details.hidden));
+    });
+  });
+</script>
+{% endblock %}
