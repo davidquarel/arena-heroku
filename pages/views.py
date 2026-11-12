@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import threading
-import uuid
 import zipfile
 from pathlib import Path
 from urllib.parse import unquote
@@ -21,6 +20,8 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 from markdown.blockprocessors import BlockProcessor
 from markdown.extensions import Extension
+from markdown.extensions.md_in_html import HtmlBlockPreprocessor, HTMLExtractorExtra
+from markdown.treeprocessors import Treeprocessor
 from openai import OpenAI
 
 from .build_info import get_build_info
@@ -49,7 +50,7 @@ SUBSECTION_DELIMITER = "=== NEW CHAPTER ==="
 
 # Bump this string whenever _render_markdown logic changes so that cached
 # entries from a previous code version are automatically invalidated.
-_RENDER_VERSION = "2026-11-12-v7-list-interrupts-paragraph"
+_RENDER_VERSION = "2026-11-12-v8-dropdowns-in-parser"
 
 # Render cache: sha256(version + raw_text) -> parsed subsections list. Bounded:
 # every edit to a page (and every PR preview) adds a new key, and nothing else
@@ -317,6 +318,64 @@ class _CommonMarkListsExtension(Extension):
         )
 
 
+# HTML blocks whose content is markdown even without a markdown="1" attribute
+_MARKDOWN_BY_DEFAULT = {"details", "blockquote"}
+
+
+class _HTMLExtractor(HTMLExtractorExtra):
+    """md_in_html's HTML splitter, with <details> and <blockquote> parsed as markdown by default."""
+
+    def get_state(self, tag, attrs):
+        if tag in _MARKDOWN_BY_DEFAULT:
+            attrs.setdefault("markdown", "1")
+        return super().get_state(tag, attrs)
+
+
+class _HtmlBlockPreprocessor(HtmlBlockPreprocessor):
+    def run(self, lines: list[str]) -> list[str]:
+        parser = _HTMLExtractor(self.md)
+        parser.feed("\n".join(lines))
+        parser.close()
+        return "".join(parser.cleandoc).split("\n")
+
+
+_HEADING_TAGS = {f"h{i}" for i in range(1, 7)}
+_HIDDEN_HEADING_PREFIX = "arena-hidden-"
+
+
+class _HideDropdownHeadings(Treeprocessor):
+    """Rename headings inside <details> so toc skips them (no id, not in the page TOC)."""
+
+    def run(self, root):
+        for details in root.iter("details"):
+            for el in details.iter():
+                if el.tag in _HEADING_TAGS:
+                    el.tag = _HIDDEN_HEADING_PREFIX + el.tag
+
+
+class _RestoreDropdownHeadings(Treeprocessor):
+    def run(self, root):
+        for el in root.iter():
+            if isinstance(el.tag, str) and el.tag.startswith(_HIDDEN_HEADING_PREFIX):
+                el.tag = el.tag[len(_HIDDEN_HEADING_PREFIX):]
+
+
+class _DropdownsExtension(Extension):
+    """
+    Render markdown inside <details> dropdowns and <blockquote>s, in the same
+    parse as the rest of the page. md_in_html builds them as elements, so code
+    inside them is highlighted like any other code, nested dropdowns just work,
+    and a "<details>" in a code block stays code.
+    """
+
+    def extendMarkdown(self, md_instance):
+        md_instance.registerExtension(self)
+        md_instance.preprocessors.register(_HtmlBlockPreprocessor(md_instance), "html_block", 20)
+        # toc runs at 5: hide dropdown headings just before it, put them back just after
+        md_instance.treeprocessors.register(_HideDropdownHeadings(md_instance), "hide_dropdown_headings", 6)
+        md_instance.treeprocessors.register(_RestoreDropdownHeadings(md_instance), "restore_dropdown_headings", 4)
+
+
 def _protect_latex(text: str) -> tuple[str, dict]:
     """
     Protect LaTeX blocks from markdown processing by replacing with placeholders.
@@ -367,102 +426,6 @@ def _restore_latex(html_text: str, placeholders: dict) -> str:
     return html_text
 
 
-_DETAILS_TAG = re.compile(r"<(/?)details\b[^>]*>", re.IGNORECASE)
-
-
-def _top_level_details_spans(text: str) -> list[tuple[int, int]]:
-    """
-    (start, end) of each outermost <details>...</details> block in `text`.
-
-    Each </details> is paired with the most recent unpaired <details>, so a
-    dropdown inside another dropdown stays part of its parent (a non-greedy
-    regex would end the parent at the inner dropdown's </details>). A <details>
-    that is never closed runs to the end of `text`, as it would in the browser.
-    A stray </details> is ignored.
-    """
-    pairs, open_starts = [], []
-    for m in _DETAILS_TAG.finditer(text):
-        if not m.group(1):  # <details ...>
-            open_starts.append(m.start())
-        elif open_starts:  # </details>
-            pairs.append((open_starts.pop(), m.end()))
-    pairs += [(start, len(text)) for start in open_starts]  # never closed
-    spans = []
-    for start, end in sorted(pairs):
-        if not spans or start >= spans[-1][1]:  # not inside the previous outermost block
-            spans.append((start, end))
-    return spans
-
-
-def _preprocess_details_blocks(text: str) -> tuple[str, dict]:
-    """
-    Pre-render <details> block content before the main markdown call.
-
-    The main md.markdown() call does not process markdown inside raw HTML blocks
-    (like <details>). This function extracts each <details> block, renders its
-    content using md.markdown() (so code blocks get proper Pygments highlighting
-    and no italic/bold is accidentally applied inside code), and replaces the
-    block with a placeholder. The rendered HTML is restored after the main call.
-
-    Dropdowns nested inside a dropdown are handled recursively: each block's
-    content is pre-processed the same way before it is rendered.
-
-    Returns (modified_text, placeholders_dict).
-    """
-    placeholders: dict[str, str] = {}
-
-    def render_block(full_match: str) -> str:
-        opening_tag = _DETAILS_TAG.match(full_match).group(0)  # e.g. "<details>" or "<details open>"
-        summary_match = re.search(r"<summary[^>]*>(.*?)</summary>", full_match, re.DOTALL)
-        if not summary_match:
-            return full_match
-
-        summary_tag = summary_match.group(0)
-        content_start = full_match.find("</summary>") + len("</summary>")
-        closed = re.search(r"</details>\s*$", full_match, re.IGNORECASE)
-        content_end = closed.start() if closed else len(full_match)  # an unclosed block runs to the end
-
-        content = full_match[content_start:content_end].strip()
-
-        # Handle blockquotes inside details
-        content = content.replace("<blockquote>", '<blockquote markdown="1">')
-
-        # Render any dropdowns nested in this one first (they'd be raw HTML to the
-        # md.markdown() call below, so the markdown inside them would not render)
-        content, nested = _preprocess_details_blocks(content)
-
-        # Render the content with markdown (same extensions minus toc, since
-        # headers inside <details> shouldn't appear in the page-level TOC)
-        rendered_content = md.markdown(
-            content,
-            extensions=["codehilite", "fenced_code", "tables", "md_in_html", _CommonMarkListsExtension()],
-            extension_configs={
-                "codehilite": {
-                    "css_class": "codehilite",
-                    "guess_lang": True,
-                    "linenums": False,
-                    "use_pygments": True,
-                },
-            },
-        )
-
-        for nested_placeholder, nested_html in nested.items():
-            rendered_content = rendered_content.replace(f"<p>{nested_placeholder}</p>", nested_html)
-            rendered_content = rendered_content.replace(nested_placeholder, nested_html)
-
-        details_html = f"{opening_tag}\n{summary_tag}\n{rendered_content}\n</details>"
-        placeholder = f"DETAILSBLOCK{uuid.uuid4().hex}END"
-        placeholders[placeholder] = details_html
-        return placeholder
-
-    pieces, last = [], 0
-    for start, end in _top_level_details_spans(text):
-        pieces += [text[last:start], render_block(text[start:end])]
-        last = end
-    pieces.append(text[last:])
-    return "".join(pieces), placeholders
-
-
 def _render_markdown(text: str) -> str:
     """Convert markdown text to HTML."""
     # Normalize line endings (some GitHub files use CRLF)
@@ -471,17 +434,8 @@ def _render_markdown(text: str) -> str:
     # Pre-process to handle exercise info blocks
     text = _preprocess_exercise_blocks(text)
 
-    # Enable markdown processing inside HTML blockquotes
-    text = text.replace("<blockquote>", '<blockquote markdown="1">')
-
     # Protect LaTeX blocks from markdown processing
     text, latex_placeholders = _protect_latex(text)
-
-    # Pre-render <details> block content BEFORE the main markdown call.
-    # This ensures code blocks inside dropdowns are syntax-highlighted by
-    # Pygments (so * operators stay as <span> tags) rather than being passed
-    # through the post-hoc italic/bold regex, which could misinterpret them.
-    text, details_placeholders = _preprocess_details_blocks(text)
 
     # Configure markdown with proper syntax highlighting
     # Note: codehilite must come BEFORE fenced_code for proper integration
@@ -493,6 +447,7 @@ def _render_markdown(text: str) -> str:
             "tables",
             "toc",
             "md_in_html",
+            _DropdownsExtension(),
             _CommonMarkListsExtension(),
         ],
         extension_configs={
@@ -504,11 +459,6 @@ def _render_markdown(text: str) -> str:
             },
         },
     )
-
-    # Restore <details> blocks (before LaTeX so LaTeX inside details is restored too)
-    for placeholder, details_html in details_placeholders.items():
-        rendered = rendered.replace(f"<p>{placeholder}</p>", details_html)
-        rendered = rendered.replace(placeholder, details_html)
 
     # Restore LaTeX blocks
     rendered = _restore_latex(rendered, latex_placeholders)
